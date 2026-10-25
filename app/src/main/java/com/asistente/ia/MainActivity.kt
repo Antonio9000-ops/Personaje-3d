@@ -3,6 +3,7 @@ package com.asistente.ia
 import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.Choreographer
+import android.view.Surface
 import android.view.SurfaceView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.filament.*
@@ -34,6 +35,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
     private lateinit var view: View
     private lateinit var camera: Camera
 
+    private var swapChain: SwapChain? = null
     private var materialProvider: UbershaderProvider? = null
     private var assetLoader: AssetLoader? = null
     private var filamentAsset: FilamentAsset? = null
@@ -51,7 +53,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
     }
 
     private fun initFilament() {
-        // Forzar backend OpenGL ES para evitar sobrecosto de memoria de Vulkan
+        // Backend OpenGL ES 3.0 explícito para mantener baja la sobrecarga en RAM
         engine = Engine.create(Engine.Backend.OPENGL)
         renderer = engine.createRenderer()
         scene = engine.createScene()
@@ -60,17 +62,23 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
 
         view.scene = scene
         view.camera = camera
-        view.isPostProcessingEnabled = false // Ahorro de GPU en modelo anime unlit
+        view.isPostProcessingEnabled = false // Sin post-procesamiento pesado innecesario
 
         uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply {
             renderCallback = object : UiHelper.RendererCallback {
-                override fun onNativeWindowChanged(surface: android.view.Surface) {
-                    val swapChain = engine.createSwapChain(surface)
-                    renderer.setPresentationTime(0)
+                override fun onNativeWindowChanged(surface: Surface) {
+                    swapChain?.let { engine.destroySwapChain(it) }
+                    swapChain = engine.createSwapChain(surface)
                     view.viewport = Viewport(0, 0, surfaceView.width, surfaceView.height)
                 }
 
-                override fun onDetachedFromSurface() {}
+                override fun onDetachedFromSurface() {
+                    swapChain?.let {
+                        engine.destroySwapChain(it)
+                        engine.flushAndWait()
+                        swapChain = null
+                    }
+                }
 
                 override fun onResized(width: Int, height: Int) {
                     view.viewport = Viewport(0, 0, width, height)
@@ -85,6 +93,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
 
     private fun updateCameraProjection(width: Int, height: Int) {
         val aspect = width.toDouble() / height.toDouble()
+        // Encuadre de busto/rostro para el asistente
         camera.setProjection(45.0, aspect, 0.1, 20.0, Camera.Fov.VERTICAL)
         camera.lookAt(0.0, 1.3, 1.2, 0.0, 1.2, 0.0, 0.0, 1.0, 0.0)
     }
@@ -113,9 +122,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
 
     override fun doFrame(frameTimeNanos: Long) {
         choreographer.postFrameCallback(this)
-        if (uiHelper.isReadyToRender) {
-            val swapChain = uiHelper.swapChain
-            if (swapChain != null && renderer.beginFrame(swapChain, frameTimeNanos)) {
+        val currentSwapChain = swapChain
+        if (uiHelper.isReadyToRender && currentSwapChain != null) {
+            if (renderer.beginFrame(currentSwapChain, frameTimeNanos)) {
                 renderer.render(view)
                 renderer.endFrame()
             }
@@ -142,6 +151,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         super.onDestroy()
         choreographer.removeFrameCallback(this)
         uiHelper.detach()
+        swapChain?.let { engine.destroySwapChain(it) }
         filamentAsset?.let { assetLoader?.destroyAsset(it) }
         materialProvider?.destroy()
         assetLoader?.destroy()
