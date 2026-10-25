@@ -3,13 +3,13 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <!-- Renderizador 3D al fondo -->
+    <!-- Renderizador 3D -->
     <SurfaceView
         android:id="@+id/surfaceView"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Botón de configuración de API Key en la esquina superior derecha -->
+    <!-- Botón de configuración -->
     <ImageButton
         android:id="@+id/btnSettings"
         android:layout_width="48dp"
@@ -20,7 +20,7 @@
         android:src="@android:drawable/ic_menu_manage"
         android:contentDescription="Configurar API Key" />
 
-    <!-- Subtítulo de respuesta del personaje -->
+    <!-- Subtítulo de respuesta -->
     <TextView
         android:id="@+id/txtResponse"
         android:layout_width="match_parent"
@@ -28,37 +28,42 @@
         android:layout_gravity="top|center_horizontal"
         android:layout_marginHorizontal="20dp"
         android:layout_marginTop="70dp"
-        android:background="#99000000"
+        android:background="#AA111116"
         android:padding="12dp"
         android:textColor="#FFFFFF"
         android:textSize="15sp"
-        android:text="Hola, soy tu asistente virtual. Presiona el engranaje arriba para configurar tu API Key."
-        android:visibility="visible" />
+        android:text="¡Hola! Desliza el dedo horizontalmente para girarme o pulsa el engranaje arriba para configurar tu API Key." />
 
-    <!-- Barra inferior de chat -->
+    <!-- Contenedor inferior de chat protegido contra la barra del sistema -->
     <LinearLayout
+        android:id="@+id/bottomBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:orientation="horizontal"
-        android:padding="10dp"
-        android:background="#B3000000">
+        android:padding="12dp"
+        android:background="#E6121218">
 
         <EditText
             android:id="@+id/inputMessage"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:minHeight="48dp"
             android:hint="Escribe un mensaje..."
             android:textColor="#FFFFFF"
-            android:textColorHint="#AAAAAA"
-            android:padding="10dp"
-            android:background="@android:color/transparent" />
+            android:textColorHint="#888888"
+            android:paddingHorizontal="14dp"
+            android:background="#22FFFFFF" />
 
         <Button
             android:id="@+id/btnSend"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Enviar" />
+            android:layout_marginStart="8dp"
+            android:minHeight="48dp"
+            android:text="ENVIAR"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#4A5568" />
     </LinearLayout>
 </FrameLayout>

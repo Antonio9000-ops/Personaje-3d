@@ -9,8 +9,11 @@ import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceView
+import android.view.View as AndroidView
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.filament.*
 import com.google.android.filament.android.UiHelper
 import com.google.android.filament.gltfio.*
@@ -32,7 +35,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         }
         private const val PREFS_NAME = "AsistentePrefs"
         private const val KEY_API_KEY = "api_key"
-        private const val KEY_ENDPOINT = "api_endpoint" // openrouter o grok
+        private const val KEY_ENDPOINT = "api_endpoint"
+        private const val KEY_MODEL = "api_model"
     }
 
     private lateinit var surfaceView: SurfaceView
@@ -44,6 +48,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
     private lateinit var scene: Scene
     private lateinit var view: View
     private lateinit var camera: Camera
+    private var skybox: Skybox? = null
 
     private var swapChain: SwapChain? = null
     private var materialProvider: UbershaderProvider? = null
@@ -51,11 +56,13 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
     private var filamentAsset: FilamentAsset? = null
     private var isRendering = false
 
-    // Control táctil de rotación
+    // Control de tiempo y animación procedimental
+    private var baseTimeNanos: Long = 0L
     private var rotationAngle = 0.0f
     private var lastTouchX = 0.0f
 
-    // UI y Voz
+    // UI
+    private lateinit var bottomBar: LinearLayout
     private lateinit var txtResponse: TextView
     private lateinit var inputMessage: EditText
     private lateinit var btnSend: Button
@@ -68,10 +75,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         setContentView(R.layout.activity_main)
 
         surfaceView = findViewById(R.id.surfaceView)
+        bottomBar = findViewById(R.id.bottomBar)
         txtResponse = findViewById(R.id.txtResponse)
         inputMessage = findViewById(R.id.inputMessage)
         btnSend = findViewById(R.id.btnSend)
         btnSettings = findViewById(R.id.btnSettings)
+
+        // Ajuste dinámico contra la barra de navegación del sistema
+        ViewCompat.setOnApplyWindowInsetsListener(bottomBar) { v, insets ->
+            val navBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(v.paddingLeft, v.paddingTop, v.paddingRight, navBars.bottom + 16)
+            insets
+        }
 
         tts = TextToSpeech(this, this)
         choreographer = Choreographer.getInstance()
@@ -89,6 +104,17 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         scene = engine.createScene()
         view = engine.createView()
         camera = engine.createCamera(engine.entityManager.create())
+
+        // 1. Limpieza de búfer para evitar estelas/clones repetidos
+        val clearOptions = renderer.clearOptions
+        clearOptions.clear = true
+        renderer.clearOptions = clearOptions
+
+        // 2. Fondo sólido oscuro que reescribe cada píxel en cada fotograma
+        skybox = Skybox.Builder()
+            .color(0.10f, 0.10f, 0.12f, 1.0f)
+            .build(engine)
+        scene.skybox = skybox
 
         view.scene = scene
         view.camera = camera
@@ -123,7 +149,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
 
     private fun updateCameraProjection(width: Int, height: Int) {
         val aspect = width.toDouble() / height.toDouble()
-        // Encuadre ajustado: distancia 2.1m, enfocado a la altura del rostro (1.40m)
         camera.setProjection(40.0, aspect, 0.1, 20.0, Camera.Fov.VERTICAL)
         camera.lookAt(0.0, 1.45, 2.1, 0.0, 1.35, 0.0, 0.0, 1.0, 0.0)
     }
@@ -140,7 +165,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
                     val deltaX = event.x - lastTouchX
                     lastTouchX = event.x
                     rotationAngle += deltaX * 0.5f
-                    applyCharacterRotation(rotationAngle)
                     true
                 }
                 else -> false
@@ -148,21 +172,29 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         }
     }
 
-    private fun applyCharacterRotation(angleDegrees: Float) {
+    // Aplica rotación manual + respiración y balanceo natural
+    private fun updateCharacterProceduralTransform(angleYDeg: Float, offsetY: Float, tiltZDeg: Float) {
         filamentAsset?.let { asset ->
-            val rad = Math.toRadians(angleDegrees.toDouble())
-            val c = Math.cos(rad).toFloat()
-            val s = Math.sin(rad).toFloat()
-            // Matriz de rotación en el eje Y (col-major)
+            val radY = Math.toRadians(angleYDeg.toDouble())
+            val cy = Math.cos(radY).toFloat()
+            val sy = Math.sin(radY).toFloat()
+
+            val radZ = Math.toRadians(tiltZDeg.toDouble())
+            val cz = Math.cos(radZ).toFloat()
+            val sz = Math.sin(radZ).toFloat()
+
             val transform = floatArrayOf(
-                c, 0f, -s, 0f,
-                0f, 1f,  0f, 0f,
-                s, 0f,  c, 0f,
-                0f, 0f,  0f, 1f
+                cy * cz, sz, -sy * cz, 0f,
+                -cy * sz, cz,  sy * sz, 0f,
+                sy,       0f,  cy,      0f,
+                0f, offsetY,   0f,      1f
             )
+
             val tm = engine.transformManager
             val instance = tm.getInstance(asset.root)
-            tm.setTransform(instance, transform)
+            if (instance != 0) {
+                tm.setTransform(instance, transform)
+            }
         }
     }
 
@@ -209,17 +241,32 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         val currentEndpoint = prefs.getString(KEY_ENDPOINT, "openrouter")
         if (currentEndpoint == "grok") rbGrok.isChecked = true else rbOpenRouter.isChecked = true
 
+        val inputModel = EditText(this).apply {
+            hint = "Modelo (ej: openrouter/free)"
+            val defaultM = if (currentEndpoint == "grok") "grok-beta" else "openrouter/free"
+            setText(prefs.getString(KEY_MODEL, defaultM))
+        }
+
+        layout.addView(TextView(this).apply { text = "Clave de API:" })
         layout.addView(inputKey)
+        layout.addView(TextView(this).apply { text = "Proveedor:" })
         layout.addView(radioGroup)
+        layout.addView(TextView(this).apply { text = "Nombre del modelo:" })
+        layout.addView(inputModel)
 
         AlertDialog.Builder(this)
-            .setTitle("Configurar IA")
+            .setTitle("Configurar Asistente IA")
             .setView(layout)
             .setPositiveButton("Guardar") { _, _ ->
                 val endpoint = if (rbGrok.isChecked) "grok" else "openrouter"
+                var model = inputModel.text.toString().trim()
+                if (model.isEmpty()) {
+                    model = if (endpoint == "grok") "grok-beta" else "openrouter/free"
+                }
                 prefs.edit()
                     .putString(KEY_API_KEY, inputKey.text.toString().trim())
                     .putString(KEY_ENDPOINT, endpoint)
+                    .putString(KEY_MODEL, model)
                     .apply()
                 Toast.makeText(this, "Configuración guardada", Toast.LENGTH_SHORT).show()
             }
@@ -234,6 +281,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val apiKey = prefs.getString(KEY_API_KEY, "") ?: ""
         val endpoint = prefs.getString(KEY_ENDPOINT, "openrouter") ?: "openrouter"
+        val modelName = prefs.getString(KEY_MODEL, if (endpoint == "grok") "grok-beta" else "openrouter/free") ?: "openrouter/free"
 
         if (apiKey.isEmpty()) {
             Toast.makeText(this, "Por favor configura tu API Key primero", Toast.LENGTH_LONG).show()
@@ -251,8 +299,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
                 } else {
                     "https://openrouter.ai/api/v1/chat/completions"
                 }
-
-                val modelName = if (endpoint == "grok") "grok-beta" else "deepseek/deepseek-chat"
 
                 val url = URL(apiUrl)
                 val conn = url.openConnection() as HttpURLConnection
@@ -298,7 +344,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
                     }
                 } else {
                     val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "Error $responseCode"
-                    runOnUiThread { txtResponse.text = "Error API ($responseCode): $err" }
+                    runOnUiThread { txtResponse.text = "Error ($responseCode): $err" }
                 }
             } catch (e: Exception) {
                 runOnUiThread { txtResponse.text = "Error de red: ${e.message}" }
@@ -314,6 +360,16 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
 
     override fun doFrame(frameTimeNanos: Long) {
         choreographer.postFrameCallback(this)
+
+        if (baseTimeNanos == 0L) baseTimeNanos = frameTimeNanos
+        val elapsedSec = (frameTimeNanos - baseTimeNanos) / 1_000_000_000.0
+
+        // Respiración suave vertical (ciclo de ~2.5s) y balanceo sutil
+        val breathOffsetY = (Math.sin(elapsedSec * 2.2) * 0.007).toFloat()
+        val swayZDeg = (Math.sin(elapsedSec * 1.1) * 0.7).toFloat()
+
+        updateCharacterProceduralTransform(rotationAngle, breathOffsetY, swayZDeg)
+
         val currentSwapChain = swapChain
         if (uiHelper.isReadyToRender && currentSwapChain != null) {
             if (renderer.beginFrame(currentSwapChain, frameTimeNanos)) {
@@ -349,6 +405,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         filamentAsset?.let { assetLoader?.destroyAsset(it) }
         materialProvider?.destroy()
         assetLoader?.destroy()
+        skybox?.let { engine.destroySkybox(it) }
         engine.destroyRenderer(renderer)
         engine.destroyView(view)
         engine.destroyScene(scene)
