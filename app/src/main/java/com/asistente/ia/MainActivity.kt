@@ -6,6 +6,7 @@ import android.content.Context
 import android.opengl.Matrix as GlMatrix
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.Surface
@@ -39,6 +40,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         private const val KEY_MODEL = "api_model"
     }
 
+    enum class PoseState { IDLE_A, IDLE_B, THINKING, SPEAKING }
+
     private lateinit var surfaceView: SurfaceView
     private lateinit var uiHelper: UiHelper
     private lateinit var choreographer: Choreographer
@@ -56,12 +59,29 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
     private var filamentAsset: FilamentAsset? = null
     private var isRendering = false
 
-    // Control de animación procedimental
+    // Control de tiempo y rotación manual
     private var baseTimeNanos: Long = 0L
     private var rotationAngle = 0.0f
     private var lastTouchX = 0.0f
+    private var lastPoseChangeMs = 0L
 
-    // UI
+    // Transformaciones originales de los huesos (para no acumular derivas)
+    private val origLeftArm = FloatArray(16)
+    private val origRightArm = FloatArray(16)
+    private val origLeftElbow = FloatArray(16)
+    private val origRightElbow = FloatArray(16)
+    private val origHead = FloatArray(16)
+    private var bonesInitialized = false
+
+    // Estado de Poses e Interpolación (Lerp)
+    private var currentPose = PoseState.IDLE_A
+    private var curLeftArmZ = 0f; private var targetLeftArmZ = 70f
+    private var curRightArmZ = 0f; private var targetRightArmZ = -70f
+    private var curLeftElbowX = 0f; private var targetLeftElbowX = -15f
+    private var curRightElbowX = 0f; private var targetRightElbowX = -15f
+    private var curHeadZ = 0f; private var targetHeadZ = 0f
+
+    // UI y Voz
     private lateinit var bottomBar: LinearLayout
     private lateinit var txtResponse: TextView
     private lateinit var inputMessage: EditText
@@ -88,6 +108,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         }
 
         tts = TextToSpeech(this, this)
+        setupTtsListener()
         choreographer = Choreographer.getInstance()
 
         initFilament()
@@ -95,6 +116,20 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
 
         btnSettings.setOnClickListener { showApiKeyDialog() }
         btnSend.setOnClickListener { sendMessage() }
+    }
+
+    private fun setupTtsListener() {
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                runOnUiThread { setPose(PoseState.SPEAKING) }
+            }
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread { setPose(PoseState.IDLE_A) }
+            }
+            override fun onError(utteranceId: String?) {
+                runOnUiThread { setPose(PoseState.IDLE_A) }
+            }
+        })
     }
 
     private fun initFilament() {
@@ -188,49 +223,84 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
                 scene.addEntities(asset.entities)
                 asset.releaseSourceData()
 
-                applyRestingArmPose(asset)
+                captureOriginalBoneTransforms(asset)
+                setPose(PoseState.IDLE_A)
             }
         }
     }
 
-    private fun applyRestingArmPose(asset: FilamentAsset) {
+    private fun captureOriginalBoneTransforms(asset: FilamentAsset) {
         val tm = engine.transformManager
-
-        // Brazo izquierdo: rotación hacia abajo en Z (-65°)
-        rotateBone(asset, tm, "J_Bip_L_UpperArm", -65f, 0f, 0f, 1f)
-        rotateBone(asset, tm, "J_Bip_L_LowerArm", -15f, 0f, 1f, 0f)
-
-        // Brazo derecho: rotación hacia abajo en Z (+65°)
-        rotateBone(asset, tm, "J_Bip_R_UpperArm", 65f, 0f, 0f, 1f)
-        rotateBone(asset, tm, "J_Bip_R_LowerArm", 15f, 0f, 1f, 0f)
-
-        // Actualizar matrices esqueléticas a través de la instancia
-        asset.getInstance()?.getAnimator()?.updateBoneMatrices()
+        captureBone(asset, tm, "J_Bip_L_UpperArm", origLeftArm)
+        captureBone(asset, tm, "J_Bip_R_UpperArm", origRightArm)
+        captureBone(asset, tm, "J_Bip_L_LowerArm", origLeftElbow)
+        captureBone(asset, tm, "J_Bip_R_LowerArm", origRightElbow)
+        captureBone(asset, tm, "J_Bip_C_Head", origHead)
+        bonesInitialized = true
     }
 
-    private fun rotateBone(
+    private fun captureBone(asset: FilamentAsset, tm: TransformManager, name: String, outMatrix: FloatArray) {
+        val entity = asset.getFirstEntityByName(name)
+        if (entity != 0) {
+            val inst = tm.getInstance(entity)
+            if (inst != 0) tm.getTransform(inst, outMatrix)
+        }
+    }
+
+    private fun setPose(pose: PoseState) {
+        currentPose = pose
+        when (pose) {
+            PoseState.IDLE_A -> {
+                targetLeftArmZ = 70f
+                targetRightArmZ = -70f
+                targetLeftElbowX = -15f
+                targetRightElbowX = -15f
+                targetHeadZ = 0f
+            }
+            PoseState.IDLE_B -> {
+                // Postura alterna en reposo: cambio de peso y cabeza ladeada
+                targetLeftArmZ = 65f
+                targetRightArmZ = -75f
+                targetLeftElbowX = -20f
+                targetRightElbowX = -10f
+                targetHeadZ = 6f
+            }
+            PoseState.THINKING -> {
+                // Mano izquierda al pecho y cabeza inclinada pensando
+                targetLeftArmZ = 20f
+                targetRightArmZ = -70f
+                targetLeftElbowX = -65f
+                targetRightElbowX = -10f
+                targetHeadZ = -8f
+            }
+            PoseState.SPEAKING -> {
+                // Gesto activo con los brazos ligeramente adelantados
+                targetLeftArmZ = 55f
+                targetRightArmZ = -55f
+                targetLeftElbowX = -35f
+                targetRightElbowX = -35f
+                targetHeadZ = 0f
+            }
+        }
+    }
+
+    private fun applyBoneRotation(
         asset: FilamentAsset,
         tm: TransformManager,
-        boneName: String,
-        angleDeg: Float,
-        axisX: Float,
-        axisY: Float,
-        axisZ: Float
+        name: String,
+        origMatrix: FloatArray,
+        deg: Float,
+        ax: Float, ay: Float, az: Float
     ) {
-        val entity = asset.getFirstEntityByName(boneName)
+        val entity = asset.getFirstEntityByName(name)
         if (entity != 0) {
-            val instance = tm.getInstance(entity)
-            if (instance != 0) {
-                val originalTransform = FloatArray(16)
-                tm.getTransform(instance, originalTransform)
-
-                val rotMatrix = FloatArray(16)
-                GlMatrix.setRotateM(rotMatrix, 0, angleDeg, axisX, axisY, axisZ)
-
-                val newTransform = FloatArray(16)
-                GlMatrix.multiplyMM(newTransform, 0, originalTransform, 0, rotMatrix, 0)
-
-                tm.setTransform(instance, newTransform)
+            val inst = tm.getInstance(entity)
+            if (inst != 0) {
+                val rot = FloatArray(16)
+                GlMatrix.setRotateM(rot, 0, deg, ax, ay, az)
+                val res = FloatArray(16)
+                GlMatrix.multiplyMM(res, 0, origMatrix, 0, rot, 0)
+                tm.setTransform(inst, res)
             }
         }
     }
@@ -331,6 +401,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
 
         inputMessage.setText("")
         txtResponse.text = "Pensando..."
+        setPose(PoseState.THINKING)
 
         Thread {
             try {
@@ -380,14 +451,20 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
 
                     runOnUiThread {
                         txtResponse.text = reply
-                        tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "UtteranceId")
+                        tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "UtteranceReply")
                     }
                 } else {
                     val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "Error $responseCode"
-                    runOnUiThread { txtResponse.text = "Error ($responseCode): $err" }
+                    runOnUiThread {
+                        txtResponse.text = "Error ($responseCode): $err"
+                        setPose(PoseState.IDLE_A)
+                    }
                 }
             } catch (e: Exception) {
-                runOnUiThread { txtResponse.text = "Error de red: ${e.message}" }
+                runOnUiThread {
+                    txtResponse.text = "Error de red: ${e.message}"
+                    setPose(PoseState.IDLE_A)
+                }
             }
         }.start()
     }
@@ -395,6 +472,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale("es", "ES")
+            setupTtsListener()
         }
     }
 
@@ -403,12 +481,41 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
 
         if (baseTimeNanos == 0L) baseTimeNanos = frameTimeNanos
         val elapsedSec = (frameTimeNanos - baseTimeNanos) / 1_000_000_000.0
+        val nowMs = System.currentTimeMillis()
 
+        // Cambio periódico de postura en reposo cada 10 segundos
+        if (nowMs - lastPoseChangeMs > 10000L) {
+            lastPoseChangeMs = nowMs
+            if (currentPose == PoseState.IDLE_A) setPose(PoseState.IDLE_B)
+            else if (currentPose == PoseState.IDLE_B) setPose(PoseState.IDLE_A)
+        }
+
+        // Interpolación fluida (Lerp) hacia los ángulos de la pose activa
+        val lerpFactor = 0.05f
+        curLeftArmZ += (targetLeftArmZ - curLeftArmZ) * lerpFactor
+        curRightArmZ += (targetRightArmZ - curRightArmZ) * lerpFactor
+        curLeftElbowX += (targetLeftElbowX - curLeftElbowX) * lerpFactor
+        curRightElbowX += (targetRightElbowX - curRightElbowX) * lerpFactor
+        curHeadZ += (targetHeadZ - curHeadZ) * lerpFactor
+
+        // Respiración suave
         val breathOffsetY = (Math.sin(elapsedSec * 2.2) * 0.007).toFloat()
         val swayZDeg = (Math.sin(elapsedSec * 1.1) * 0.7).toFloat()
 
         updateCharacterProceduralTransform(rotationAngle, breathOffsetY, swayZDeg)
-        filamentAsset?.getInstance()?.getAnimator()?.updateBoneMatrices()
+
+        // Aplicar ángulos interpolados a los huesos
+        filamentAsset?.let { asset ->
+            if (bonesInitialized) {
+                val tm = engine.transformManager
+                applyBoneRotation(asset, tm, "J_Bip_L_UpperArm", origLeftArm, curLeftArmZ, 0f, 0f, 1f)
+                applyBoneRotation(asset, tm, "J_Bip_R_UpperArm", origRightArm, curRightArmZ, 0f, 0f, 1f)
+                applyBoneRotation(asset, tm, "J_Bip_L_LowerArm", origLeftElbow, curLeftElbowX, 1f, 0f, 0f)
+                applyBoneRotation(asset, tm, "J_Bip_R_LowerArm", origRightElbow, curRightElbowX, 1f, 0f, 0f)
+                applyBoneRotation(asset, tm, "J_Bip_C_Head", origHead, curHeadZ, 0f, 0f, 1f)
+                asset.getInstance()?.getAnimator()?.updateBoneMatrices()
+            }
+        }
 
         val currentSwapChain = swapChain
         if (uiHelper.isReadyToRender && currentSwapChain != null) {
