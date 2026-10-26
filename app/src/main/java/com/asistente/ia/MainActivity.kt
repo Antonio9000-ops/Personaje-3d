@@ -3,13 +3,13 @@ package com.asistente.ia
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Context
+import android.opengl.Matrix as GlMatrix
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceView
-import android.view.View as AndroidView
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -56,7 +56,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
     private var filamentAsset: FilamentAsset? = null
     private var isRendering = false
 
-    // Control de tiempo y animación procedimental
+    // Control de animación procedimental
     private var baseTimeNanos: Long = 0L
     private var rotationAngle = 0.0f
     private var lastTouchX = 0.0f
@@ -81,7 +81,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         btnSend = findViewById(R.id.btnSend)
         btnSettings = findViewById(R.id.btnSettings)
 
-        // Ajuste dinámico contra la barra de navegación del sistema
         ViewCompat.setOnApplyWindowInsetsListener(bottomBar) { v, insets ->
             val navBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(v.paddingLeft, v.paddingTop, v.paddingRight, navBars.bottom + 16)
@@ -105,12 +104,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         view = engine.createView()
         camera = engine.createCamera(engine.entityManager.create())
 
-        // 1. Limpieza de búfer para evitar estelas/clones repetidos
         val clearOptions = renderer.clearOptions
         clearOptions.clear = true
         renderer.clearOptions = clearOptions
 
-        // 2. Fondo sólido oscuro que reescribe cada píxel en cada fotograma
         skybox = Skybox.Builder()
             .color(0.10f, 0.10f, 0.12f, 1.0f)
             .build(engine)
@@ -150,7 +147,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
     private fun updateCameraProjection(width: Int, height: Int) {
         val aspect = width.toDouble() / height.toDouble()
         camera.setProjection(40.0, aspect, 0.1, 20.0, Camera.Fov.VERTICAL)
-        camera.lookAt(0.0, 1.45, 2.1, 0.0, 1.35, 0.0, 0.0, 1.0, 0.0)
+        // Encuadre ajustado al nuevo ancho con brazos abajo
+        camera.lookAt(0.0, 1.40, 2.0, 0.0, 1.30, 0.0, 0.0, 1.0, 0.0)
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -168,32 +166,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
                     true
                 }
                 else -> false
-            }
-        }
-    }
-
-    // Aplica rotación manual + respiración y balanceo natural
-    private fun updateCharacterProceduralTransform(angleYDeg: Float, offsetY: Float, tiltZDeg: Float) {
-        filamentAsset?.let { asset ->
-            val radY = Math.toRadians(angleYDeg.toDouble())
-            val cy = Math.cos(radY).toFloat()
-            val sy = Math.sin(radY).toFloat()
-
-            val radZ = Math.toRadians(tiltZDeg.toDouble())
-            val cz = Math.cos(radZ).toFloat()
-            val sz = Math.sin(radZ).toFloat()
-
-            val transform = floatArrayOf(
-                cy * cz, sz, -sy * cz, 0f,
-                -cy * sz, cz,  sy * sz, 0f,
-                sy,       0f,  cy,      0f,
-                0f, offsetY,   0f,      1f
-            )
-
-            val tm = engine.transformManager
-            val instance = tm.getInstance(asset.root)
-            if (instance != 0) {
-                tm.setTransform(instance, transform)
             }
         }
     }
@@ -216,6 +188,77 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
                 resourceLoader.loadResources(asset)
                 scene.addEntities(asset.entities)
                 asset.releaseSourceData()
+
+                // Aplicar la pose de descanso inmediatamente tras cargar el modelo
+                applyRestingArmPose(asset)
+            }
+        }
+    }
+
+    // Configura los huesos para salir de la Pose T
+    private fun applyRestingArmPose(asset: FilamentAsset) {
+        val tm = engine.transformManager
+
+        // Brazo izquierdo: rotación hacia abajo en Z (-65°) y leve rotación adelante
+        rotateBone(asset, tm, "J_Bip_L_UpperArm", -65f, 0f, 0f, 1f)
+        rotateBone(asset, tm, "J_Bip_L_LowerArm", -15f, 0f, 1f, 0f)
+
+        // Brazo derecho: rotación hacia abajo en Z (+65°) y leve rotación adelante
+        rotateBone(asset, tm, "J_Bip_R_UpperArm", 65f, 0f, 0f, 1f)
+        rotateBone(asset, tm, "J_Bip_R_LowerArm", 15f, 0f, 1f, 0f)
+
+        // Actualizar matriz de deformación esquelética
+        asset.animator?.updateBoneMatrices()
+    }
+
+    private fun rotateBone(
+        asset: FilamentAsset,
+        tm: TransformManager,
+        boneName: String,
+        angleDeg: Float,
+        axisX: Float,
+        axisY: Float,
+        axisZ: Float
+    ) {
+        val entity = asset.getFirstEntityByName(boneName)
+        if (entity != 0) {
+            val instance = tm.getInstance(entity)
+            if (instance != 0) {
+                val originalTransform = FloatArray(16)
+                tm.getTransform(instance, originalTransform)
+
+                val rotMatrix = FloatArray(16)
+                GlMatrix.setRotateM(rotMatrix, 0, angleDeg, axisX, axisY, axisZ)
+
+                val newTransform = FloatArray(16)
+                GlMatrix.multiplyMM(newTransform, 0, originalTransform, 0, rotMatrix, 0)
+
+                tm.setTransform(instance, newTransform)
+            }
+        }
+    }
+
+    private fun updateCharacterProceduralTransform(angleYDeg: Float, offsetY: Float, tiltZDeg: Float) {
+        filamentAsset?.let { asset ->
+            val radY = Math.toRadians(angleYDeg.toDouble())
+            val cy = Math.cos(radY).toFloat()
+            val sy = Math.sin(radY).toFloat()
+
+            val radZ = Math.toRadians(tiltZDeg.toDouble())
+            val cz = Math.cos(radZ).toFloat()
+            val sz = Math.sin(radZ).toFloat()
+
+            val transform = floatArrayOf(
+                cy * cz, sz, -sy * cz, 0f,
+                -cy * sz, cz,  sy * sz, 0f,
+                sy,       0f,  cy,      0f,
+                0f, offsetY,   0f,      1f
+            )
+
+            val tm = engine.transformManager
+            val instance = tm.getInstance(asset.root)
+            if (instance != 0) {
+                tm.setTransform(instance, transform)
             }
         }
     }
@@ -364,11 +407,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         if (baseTimeNanos == 0L) baseTimeNanos = frameTimeNanos
         val elapsedSec = (frameTimeNanos - baseTimeNanos) / 1_000_000_000.0
 
-        // Respiración suave vertical (ciclo de ~2.5s) y balanceo sutil
         val breathOffsetY = (Math.sin(elapsedSec * 2.2) * 0.007).toFloat()
         val swayZDeg = (Math.sin(elapsedSec * 1.1) * 0.7).toFloat()
 
         updateCharacterProceduralTransform(rotationAngle, breathOffsetY, swayZDeg)
+        filamentAsset?.animator?.updateBoneMatrices()
 
         val currentSwapChain = swapChain
         if (uiHelper.isReadyToRender && currentSwapChain != null) {
