@@ -147,7 +147,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
     private fun updateCameraProjection(width: Int, height: Int) {
         val aspect = width.toDouble() / height.toDouble()
         camera.setProjection(40.0, aspect, 0.1, 20.0, Camera.Fov.VERTICAL)
-        // Encuadre ajustado al nuevo ancho con brazos abajo
         camera.lookAt(0.0, 1.40, 2.0, 0.0, 1.30, 0.0, 0.0, 1.0, 0.0)
     }
 
@@ -189,26 +188,24 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
                 scene.addEntities(asset.entities)
                 asset.releaseSourceData()
 
-                // Aplicar la pose de descanso inmediatamente tras cargar el modelo
                 applyRestingArmPose(asset)
             }
         }
     }
 
-    // Configura los huesos para salir de la Pose T
     private fun applyRestingArmPose(asset: FilamentAsset) {
         val tm = engine.transformManager
 
-        // Brazo izquierdo: rotación hacia abajo en Z (-65°) y leve rotación adelante
+        // Brazo izquierdo: rotación hacia abajo en Z (-65°)
         rotateBone(asset, tm, "J_Bip_L_UpperArm", -65f, 0f, 0f, 1f)
         rotateBone(asset, tm, "J_Bip_L_LowerArm", -15f, 0f, 1f, 0f)
 
-        // Brazo derecho: rotación hacia abajo en Z (+65°) y leve rotación adelante
+        // Brazo derecho: rotación hacia abajo en Z (+65°)
         rotateBone(asset, tm, "J_Bip_R_UpperArm", 65f, 0f, 0f, 1f)
         rotateBone(asset, tm, "J_Bip_R_LowerArm", 15f, 0f, 1f, 0f)
 
-        // Actualizar matriz de deformación esquelética
-        asset.animator?.updateBoneMatrices()
+        // Actualizar matrices esqueléticas a través de la instancia
+        asset.getInstance()?.getAnimator()?.updateBoneMatrices()
     }
 
     private fun rotateBone(
@@ -411,7 +408,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TextToSpe
         val swayZDeg = (Math.sin(elapsedSec * 1.1) * 0.7).toFloat()
 
         updateCharacterProceduralTransform(rotationAngle, breathOffsetY, swayZDeg)
-        filamentAsset?.animator?.updateBoneMatrices()
+        filamentAsset?.getInstance()?.getAnimator()?.updateBoneMatrices()
 
         val currentSwapChain = swapChain
         if (uiHelper.isReadyToRender && currentSwapChain != null) {
